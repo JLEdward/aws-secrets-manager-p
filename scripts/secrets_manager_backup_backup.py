@@ -25,7 +25,7 @@ def assume_role(source_account_id, entropy):
     return sts_client.assume_role(
         RoleArn=(
             f"arn:aws:iam::{source_account_id}:role/"
-            "secrets_manager_backup/backup_assume_role"
+            "secrets_manager_backup/secrets_backup_assume_role"
         ),
         RoleSessionName=f"SecretsManagerBackup{entropy}"
     )["Credentials"]
@@ -73,7 +73,7 @@ def create_secret(backup_secret_name, secret_data, secret_value):
             } for region in env_backup_replication_regions.split(",")
         ]
 
-    logger.info(f"  \"{backup_secret_name}\" does not exist.  Creating with options: {options}...")
+    logger.info(f"  \"{backup_secret_name}\" does not exist.  Creating...")
     result=secretsmanager_client.create_secret(**options)
     logger.info(f"    \"{backup_secret_name}\" created.")
     update_secret_version_stage(backup_secret_name, secret_data, result["VersionId"])
@@ -94,7 +94,6 @@ def get_secret_value(remote_secretsmanager_client, secret_name):
     secret_value = remote_secretsmanager_client.get_secret_value(
         SecretId=secret_name
     )
-    print(secret_value)
     return {
         "SecretString": secret_value["SecretString"]
     } if "SecretString" in secret_value else {
@@ -123,13 +122,8 @@ def handler(event, context):
         elif event_name in ("PutSecretValue", "UpdateSecretVersionStage"):
             _secret_id = event_detail["requestParameters"]["secretId"]
             secret_name = _secret_id.split(":")[-1][:-7]
-            
-        if cur_account_id != source_account_id:
-            secret_name = (
-                f"{source_account_id}/{source_account_region}/{secret_name}"
-            )
         
-        print(secret_name)
+        print(f"Event from: {secret_name}")
         remote_secretsmanager_client = remote_client(
             source_account_id,
             source_account_region,
@@ -140,8 +134,7 @@ def handler(event, context):
             remote_secretsmanager_client,
             secret_name
         )
-        print(secret_data)
-        
+
         secret_value = get_secret_value(
             remote_secretsmanager_client,
             secret_name
@@ -182,7 +175,6 @@ def update_secret(
 ):
     """Update the backup secret with the retrieved information."""
     logger.info(f"  \"{backup_secret_name}\" exists.  Updating...")
-
     result=secretsmanager_client.update_secret(
         Description=secret_data["Description"],
         SecretId=backup_secret_name,
@@ -199,7 +191,6 @@ def update_secret(
         SecretId=backup_secret_name,
         Tags=secret_data["Tags"]
     )
-
     logger.info(f"    \"{backup_secret_name}\" updated.")
     
 def update_secret_version_stage(secret_name, secret_data, version_id):
