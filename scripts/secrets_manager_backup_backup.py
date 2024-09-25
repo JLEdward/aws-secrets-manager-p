@@ -1,7 +1,7 @@
 # Copyright 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # https://aws.amazon.com/agreement
 # SPDX-License-Identifier: MIT-0
-
+import json
 import boto3
 import logging
 from datetime import datetime
@@ -74,9 +74,9 @@ def create_secret(backup_secret_name, secret_data, secret_value):
         ]
 
     logger.info(f"  \"{backup_secret_name}\" does not exist.  Creating with options: {options}...")
-    secretsmanager_client.create_secret(**options)
+    result=secretsmanager_client.create_secret(**options)
     logger.info(f"    \"{backup_secret_name}\" created.")
-
+    update_secret_version_stage(backup_secret_name, secret_data, result["VersionId"])
 
 def describe_secret(remote_secretsmanager_client, secret_name):
     """Retrieve the source secret metadata."""
@@ -109,7 +109,6 @@ def handler(event, context):
     try:
         entropy = event["id"].split("-")[-1]
         event_detail = event["detail"]
-        print(event_detail)
         event_name = event_detail["eventName"]
 
         source_account_id = event_detail["recipientAccountId"]
@@ -130,6 +129,7 @@ def handler(event, context):
                 f"{source_account_id}/{source_account_region}/{secret_name}"
             )
         
+        print(secret_name)
         remote_secretsmanager_client = remote_client(
             source_account_id,
             source_account_region,
@@ -147,23 +147,16 @@ def handler(event, context):
             secret_name
         )
 
-        override = environ["OVERRIDE_ON_UPDATE"]
-        if override is None or override.lower() == "true":
-            backup_secret_name = secret_data.get("Name")
-            backup_secret_data = check_secret_exists(backup_secret_name)
-            if backup_secret_data is not None:
-                update_secret(
-                    backup_secret_name,
-                    backup_secret_data,
-                    secret_data,
-                    secret_value
-                )
-            else:
-                create_secret(backup_secret_name, secret_data, secret_value)
+        backup_secret_name = secret_data.get("Name")
+        backup_secret_data = check_secret_exists(backup_secret_name)
+        if backup_secret_data is not None:
+            update_secret(
+                backup_secret_name,
+                backup_secret_data,
+                secret_data,
+                secret_value
+            )
         else:
-            formatted_datetime = datetime.now().strftime("%Y%m%d%H%M%S")
-            backup_secret_name = f"{secret_data.get('Name')}_bak_{formatted_datetime}"
-            print(backup_secret_name)
             create_secret(backup_secret_name, secret_data, secret_value)
 
     except Exception:
@@ -190,11 +183,12 @@ def update_secret(
     """Update the backup secret with the retrieved information."""
     logger.info(f"  \"{backup_secret_name}\" exists.  Updating...")
 
-    secretsmanager_client.update_secret(
+    result=secretsmanager_client.update_secret(
         Description=secret_data["Description"],
         SecretId=backup_secret_name,
         **secret_value
     )
+    update_secret_version_stage(backup_secret_name, backup_secret_data, result["VersionId"])
 
     secretsmanager_client.untag_resource(
         SecretId=backup_secret_name,
@@ -207,3 +201,38 @@ def update_secret(
     )
 
     logger.info(f"    \"{backup_secret_name}\" updated.")
+    
+def update_secret_version_stage(secret_name, secret_data, version_id):
+    #Update Staging Label for Secret Version
+    max_labels = 22
+    staging_labels = []
+    version_stages=secret_data["VersionIdsToStages"]
+    print(version_stages)
+    for labels in version_stages.values():
+        staging_labels.extend(labels)
+    if len(staging_labels) == max_labels:
+        logger.info(f"\"Maximum number of staging label reached. Remove the oldest label\"")
+        oldest_label=None
+        oldest_ver=None
+        for key, labels in version_stages.items():
+            for label in labels:
+                if oldest_label is None or label < oldest_label:
+                    oldest_label = label
+                    oldest_ver = key
+        
+        print(f"Oldest label: {oldest_label}")
+        print(f"Corresponding version_id: {oldest_ver}")
+        
+        logger.info(f"\"Remove staging label: {oldest_label} for version_id {oldest_ver}\"")
+        secretsmanager_client.update_secret_version_stage(
+            SecretId=secret_name,
+            VersionStage=oldest_label,
+            RemoveFromVersionId=oldest_ver
+        )
+        
+    logger.info(f"\"Update staging label for version_id {version_id}\"")
+    secretsmanager_client.update_secret_version_stage(
+        SecretId=secret_name,
+        VersionStage=datetime.now().strftime("%Y%m%d%H%M%S"),
+        MoveToVersionId=version_id
+    )
