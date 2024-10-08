@@ -176,7 +176,7 @@ def update_secret(
     """Update the backup secret with the retrieved information."""
     logger.info(f"  \"{backup_secret_name}\" exists.  Updating...")
     result=secretsmanager_client.update_secret(
-        Description=secret_data["Description"],
+        Description=secret_data["Description"] or "",
         SecretId=backup_secret_name,
         **secret_value
     )
